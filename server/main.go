@@ -6,12 +6,16 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
 var connections []net.Conn
 
 func main() {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	msg := make(chan string, 1)
@@ -20,7 +24,6 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -32,17 +35,21 @@ func main() {
 		}
 	}()
 	go readInput(msg)
+
 loop:
 	for {
 		select {
 		case <-sigs:
 			fmt.Println("Exit:")
+			wg.Done()
+			wg.Done()
 			break loop
 		case s := <-msg:
 			fmt.Println("Current connections are: ", connections)
 			sendToAllConnections(connections, s)
 		}
 	}
+	wg.Wait()
 }
 
 func readInput(msg chan string) {

@@ -1,64 +1,76 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 )
 
 var connections []net.Conn
 
 func main() {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
+	//channels
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	msg := make(chan string, 1)
+	quitInput := make(chan bool)
+	quitAcceptLoop := make(chan bool)
 
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	//Listener
 	ln, err := net.Listen("tcp", ":8880")
 	if err != nil {
 		fmt.Println(err)
 	}
 	go func() {
+		defer ln.Close()
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				fmt.Println(err)
+			select {
+			case <-quitAcceptLoop:
+				fmt.Println("Out of accept loop")
+				return
+			default:
+				conn, err := ln.Accept()
+				if err != nil {
+					fmt.Println(err)
+				}
+				connections = append(connections, conn)
+				go handleConnection(conn)
 			}
-			connections = append(connections, conn)
-			go handleConnection(conn)
 		}
 	}()
-	go readInput(msg)
+	go readInput(msg, quitInput)
 
-loop:
 	for {
 		select {
 		case <-sigs:
 			fmt.Println("Exit:")
-			wg.Done()
-			wg.Done()
-			break loop
+			close(quitAcceptLoop)
+			close(quitInput)
+			return
 		case s := <-msg:
-			fmt.Println("Current connections are: ", connections)
-			sendToAllConnections(connections, s)
+			s = "Server : " + s
+			sendToAllConnections(connections, s, nil)
 		}
 	}
-	wg.Wait()
+
 }
 
-func readInput(msg chan string) {
+func readInput(msg chan string, quitInput chan bool) {
 	// Receive input in a loop
+	reader := bufio.NewReader(os.Stdin)
 	for {
-		var s string
-		fmt.Scan(&s)
-		// Send what we read over the channel
-		msg <- s
+		select {
+		case <-quitInput:
+			return
+		default:
+			s, _ := reader.ReadString('\n')
+			msg <- s
+		}
 	}
 }
 
@@ -71,17 +83,21 @@ func handleConnection(conn net.Conn) {
 				connections = removeConn(connections, conn)
 				fmt.Println(conn, " Disconnected")
 				fmt.Println("COnnections : ", connections)
-				break
+				return
 			}
 			fmt.Println(err)
 		}
 		fmt.Println(string(buff[:n]))
+		sendToAllConnections(connections, string(buff[:n]), conn)
 	}
 }
 
-func sendToAllConnections(connections []net.Conn, msg string) {
+func sendToAllConnections(connections []net.Conn, msg string, selfConn net.Conn) {
 	for _, conn := range connections {
 		b := []byte(msg)
+		if conn == selfConn {
+			continue
+		}
 		n, err := conn.Write(b)
 		if err != nil {
 			fmt.Println("Couldnt write to : ", conn)
